@@ -127,6 +127,14 @@ def __configure_databricks_env_from_url(url: str, password: str, schema: str) ->
     __configure_test_env_from_url(url_pieces[0], password=password, schema=schema)
 
 
+def __configure_clickhouse_env_from_url(url: str, password: str, schema: str) -> SqlEngineConnectionParameterSet:
+    """Configure ClickHouse environment variables from URL.
+
+    ClickHouse uses database instead of schema, but we map schema to database for consistency.
+    """
+    return __configure_test_env_from_url(url, password=password, schema=schema)
+
+
 def __initialize_dbt() -> None:
     """Invoke the dbt runner from the appropriate directory so we can fetch the relevant adapter.
 
@@ -174,6 +182,10 @@ def make_test_sql_client(url: str, password: str, schema: str) -> SqlClientWithD
         __configure_test_env_from_url(url, password=password, schema=schema)
         __initialize_dbt()
         return AdapterBackedDDLSqlClient(adapter=get_adapter_by_type("trino"))
+    elif dialect is SqlDialect.CLICKHOUSE:
+        __configure_clickhouse_env_from_url(url, password=password, schema=schema)
+        __initialize_dbt()
+        return AdapterBackedDDLSqlClient(adapter=get_adapter_by_type("clickhouse"))
     else:
         raise ValueError(f"Unknown dialect: `{dialect}` in URL {url}")
 

@@ -46,8 +46,28 @@ class AdapterBackedDDLSqlClient(AdapterBackedSqlClient):
                 # Format as "column_name column_type"
                 columns_to_insert.append(f"{column_description.column_name} {self._get_sql_type(column_description)}")
 
+            # ClickHouse requires ENGINE and ORDER BY clauses
+            if self.sql_engine_type is SqlEngine.CLICKHOUSE:
+                # Find first column or date column for ORDER BY
+                order_by_column = None
+                for column_description in df.column_descriptions:
+                    if column_description.column_type is datetime.datetime:
+                        order_by_column = column_description.column_name
+                        break
+                if not order_by_column and df.column_descriptions:
+                    order_by_column = df.column_descriptions[0].column_name
+
+                create_table_sql = (
+                    f"CREATE TABLE IF NOT EXISTS {sql_table.sql} "
+                    f"({', '.join(columns_to_insert)}) "
+                    f"ENGINE = MergeTree() "
+                    f"ORDER BY {order_by_column}"
+                )
+            else:
+                create_table_sql = f"CREATE TABLE IF NOT EXISTS {sql_table.sql} ({', '.join(columns_to_insert)})"
+
             self._adapter.execute(
-                f"CREATE TABLE IF NOT EXISTS {sql_table.sql} ({', '.join(columns_to_insert)})",
+                create_table_sql,
                 auto_begin=True,
                 fetch=False,
             )
@@ -65,9 +85,12 @@ class AdapterBackedDDLSqlClient(AdapterBackedSqlClient):
                         # Wrap cell in quotes & escape existing single quotes
                         escaped_cell = self._quote_escape_value(str(cell))
                         # Trino requires timestamp literals to be wrapped in a timestamp() function.
+                        # ClickHouse requires DateTime literals to use toDateTime() function.
                         # There is probably a better way to handle this.
                         if self.sql_engine_type is SqlEngine.TRINO and type(cell) is datetime.datetime:
                             cells.append(f"timestamp '{escaped_cell}'")
+                        elif self.sql_engine_type is SqlEngine.CLICKHOUSE and type(cell) is datetime.datetime:
+                            cells.append(f"toDateTime('{escaped_cell}')")
                         else:
                             cells.append(f"'{escaped_cell}'")
                     else:
@@ -106,10 +129,16 @@ class AdapterBackedDDLSqlClient(AdapterBackedSqlClient):
                 return "string"
             if self.sql_engine_type is SqlEngine.TRINO:
                 return "varchar"
+            if self.sql_engine_type is SqlEngine.CLICKHOUSE:
+                return "String"
             return "text"
         elif column_type is bool:
+            if self.sql_engine_type is SqlEngine.CLICKHOUSE:
+                return "UInt8"
             return "boolean"
         elif column_type is int:
+            if self.sql_engine_type is SqlEngine.CLICKHOUSE:
+                return "Int64"
             return "bigint"
         elif column_type is float:
             return self._sql_plan_renderer.expr_renderer.double_data_type
@@ -132,8 +161,17 @@ class AdapterBackedDDLSqlClient(AdapterBackedSqlClient):
 
     def create_schema(self, schema_name: str) -> None:
         """Create the given schema in a data warehouse. Only used in tutorials and tests."""
-        self.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
+        if self.sql_engine_type is SqlEngine.CLICKHOUSE:
+            # ClickHouse doesn't have schemas, use CREATE DATABASE instead
+            self.execute(f"CREATE DATABASE IF NOT EXISTS {schema_name}")
+        else:
+            self.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
 
     def drop_schema(self, schema_name: str, cascade: bool = True) -> None:
         """Drop the given schema from the data warehouse. Only used in tests."""
-        self.execute(f"DROP SCHEMA IF EXISTS {schema_name}{' CASCADE' if cascade else ''}")
+        if self.sql_engine_type is SqlEngine.CLICKHOUSE:
+            # ClickHouse doesn't have schemas, use DROP DATABASE instead
+            # ClickHouse doesn't support CASCADE on DROP DATABASE
+            self.execute(f"DROP DATABASE IF EXISTS {schema_name}")
+        else:
+            self.execute(f"DROP SCHEMA IF EXISTS {schema_name}{' CASCADE' if cascade else ''}")
